@@ -20,7 +20,7 @@ Our subscribers pay to see these stocks first. If we posted them here on day one
 
 Before the quarter starts, we publish a fingerprint of the list here. A fingerprint is a short code made from the list. It does not show the stocks. But if we change even one letter of the list later, the code no longer matches. When we publish the list, you can check it against the fingerprint from day one.
 
-### So how is this a track record? Do I have to believe you?
+### So, do I have to believe you?
 
 No. Each result comes from a list that we lock before the quarter starts. "How you can check us", further down, shows how to check it.
 
