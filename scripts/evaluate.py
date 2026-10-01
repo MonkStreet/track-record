@@ -9,6 +9,11 @@ Inputs: picks/*.csv, seals/*.seal, results/<portfolio>.csv (frozen at close) and
 results/interim.csv. Python standard library only. No network: the script never calls a price vendor.
 The benchmark is the S&P 500 equal-weight, measured through RSP (the benchmark row of each results file).
 
+A portfolio SEALED LATE (its formation-day seal was missed and a human sealed it later in the same
+quarter) has a seal line ending in "sealed=late entry_date=<date>". Its entry is that day's open, the
+first open after its GitHub release; its formation= is the day it was chosen. Its results must enter
+on that day, the chain allows that later entry, and the README table marks the row "sealed late".
+
 Rounding: each return is rounded to 6 decimals when it is written. The chained values use the
 written (rounded) returns, so anyone can check them from results/summary.csv alone.
 """
@@ -46,6 +51,9 @@ def quarter_shift(label, by):
 
 def quarter_start_plus_week(day):
     return day[:8] + "07"
+
+
+SEAL_LATE = re.compile(r" sealed=late entry_date=(\d{4}-\d{2}-\d{2})\n?$")
 
 
 def formation_of(label):
@@ -149,10 +157,13 @@ def summarize(label, results, chosen, revealed):
             "excess_vs_rsp": r6(float(r6(ret)) - float(r6(rsp)))}
 
 
-def chain(rows):
+def chain(rows, late=None):
     """Add the cumulative columns. Portfolios do not overlap, so values compound quarter after quarter.
     Each portfolio exits at the last close of its quarter and the next one enters at the first open
-    of the next quarter: after the previous exit, and within a week of the formation day."""
+    of the next quarter: after the previous exit, and within a week of the formation day.
+    late: {portfolio: entry_date} of the portfolios sealed late. Such a portfolio enters on its sealed
+    entry day, which may be any day of its quarter (cash at 0% from the formation day until then)."""
+    late = late or {}
     rows = sorted(rows, key=lambda r: r["portfolio"])
     g = rsp = 1.0
     prev = None
@@ -161,7 +172,11 @@ def chain(rows):
             if r["portfolio"] != quarter_shift(prev["portfolio"], 1):
                 raise EvaluationError("%s does not follow %s: a quarter is missing" % (r["portfolio"], prev["portfolio"]))
             f = formation_of(r["portfolio"])
-            if not (prev["exit_date"] < f <= r["entry_date"] <= quarter_start_plus_week(f)):
+            if r["portfolio"] in late:  # sealed late: any day of its own quarter
+                ok = prev["exit_date"] < f <= r["entry_date"] < formation_of(quarter_shift(r["portfolio"], 1))
+            else:
+                ok = prev["exit_date"] < f <= r["entry_date"] <= quarter_start_plus_week(f)
+            if not ok:
                 raise EvaluationError("%s enters on %s, but %s exits on %s: the chain has a gap or an overlap"
                                       % (r["portfolio"], r["entry_date"], prev["portfolio"], prev["exit_date"]))
         g = float(r6(g * (1 + float(r["return"]))))
@@ -203,6 +218,26 @@ def seals(root):
     return out
 
 
+def late_entries(root):
+    """{portfolio: entry_date} of the portfolios sealed late, from their seal lines."""
+    out = {}
+    d = os.path.join(root, "seals")
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        m = re.match(r"^(\d{4}-Q[1-4])\.seal$", f)
+        if m:
+            text = read_text(os.path.join(d, f))
+            if "sealed=late" in text or "entry_date=" in text:
+                x = SEAL_LATE.search(text)
+                if not x:
+                    raise EvaluationError("%s: a late seal needs \"sealed=late entry_date=<date>\" at the end of its line" % m.group(1))
+                out[m.group(1)] = x.group(1)
+    return out
+
+
+def chosen_cell(chosen, label, late):
+    return "%s, sealed late (entry %s)" % (chosen, late[label]) if label in late else chosen
+
+
 def fingerprint_cell(root, label):
     """First 8 characters of the seal's SHA-256, linked to the seal file."""
     path = os.path.join(root, "seals", label + ".seal")
@@ -222,12 +257,16 @@ def closed_labels(root):
 def compute_summary(root, revealed):
     """revealed: {label: date}. Taken from the committed summary, or given by --close."""
     chosen = seals(root)
+    late = late_entries(root)
     rows = []
     for label in closed_labels(root):
         if label not in revealed:
             raise EvaluationError("%s: no reveal date" % label)
-        rows.append(summarize(label, read_csv(os.path.join(root, "results", label + ".csv")), chosen.get(label, ""), revealed[label]))
-    return chain(rows)
+        row = summarize(label, read_csv(os.path.join(root, "results", label + ".csv")), chosen.get(label, ""), revealed[label])
+        if label in late and row["entry_date"] != late[label]:
+            raise EvaluationError("%s was sealed late with entry %s, but its results enter on %s" % (label, late[label], row["entry_date"]))
+        rows.append(row)
+    return chain(rows, late)
 
 
 def pct(x):
@@ -237,10 +276,11 @@ def pct(x):
 def results_block(summary, root):
     header = ["| Portfolio | Chosen | Fingerprint | Revealed | Return | S&P 500 equal-weight | Excess | Note |", "|---|---|---|---|---|---|---|---|"]
     lines = []
+    late = late_entries(root)
     for r in summary:
         note = "notes/%s.md" % r["portfolio"]
         lines.append("| [%s](results/%s.csv) | %s | %s | %s | %s | %s | %s | %s |" % (
-            r["portfolio"], r["portfolio"], r["chosen"], fingerprint_cell(root, r["portfolio"]), r["revealed"], pct(r["return"]),
+            r["portfolio"], r["portfolio"], chosen_cell(r["chosen"], r["portfolio"], late), fingerprint_cell(root, r["portfolio"]), r["revealed"], pct(r["return"]),
             pct(r["rsp_return"]), pct(r["excess_vs_rsp"]),
             "[note](%s)" % note if os.path.exists(os.path.join(root, note)) else "-"))
     closed = set(r["portfolio"] for r in summary)
@@ -252,7 +292,7 @@ def results_block(summary, root):
         i = interim.get(label)
         figs = ([pct(i["return"]) + " INTERIM", pct(i["rsp_return"]), pct(float(i["return"]) - float(i["rsp_return"]))]
                 if i else ["-", "-", "-"])
-        lines.append("| %s | %s | %s | due %s | %s | - |" % (label, chosen, fingerprint_cell(root, label), formation_of(quarter_shift(label, 1)), " | ".join(figs)))
+        lines.append("| %s | %s | %s | due %s | %s | - |" % (label, chosen_cell(chosen, label, late), fingerprint_cell(root, label), formation_of(quarter_shift(label, 1)), " | ".join(figs)))
     # Newest first: the open quarter, then the latest closed one. Rows sort by portfolio label.
     lines = header + sorted(lines, key=lambda l: l.split("|")[1].strip().strip("[").split("]")[0], reverse=True)
     lines.append("")

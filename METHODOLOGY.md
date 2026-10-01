@@ -37,7 +37,7 @@ The pick file stays private until the reveal. Before we publish it, we check it 
 
 We seal only if the portfolio has 150 to 600 names. Outside this band, we stop and find the cause.
 
-If publication fails, we fix the cause and then seal with the scores of that time.
+If we miss the first day, we seal later, with the scores of that day. The portfolio then starts at the first 9:30 open after the fingerprint is public, not on the first trading day of the quarter. The results table marks it "sealed late".
 We never skip a quarter. Entry (section 3) uses the actual release time.
 
 ### Pick file

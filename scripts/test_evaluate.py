@@ -181,6 +181,96 @@ class Chain(unittest.TestCase):
             shutil.rmtree(root)
 
 
+SHA = "0" * 64
+ON_TIME = "sha256=%s file=picks/2026-Q4.csv formation=2026-10-01 names=4 model=3.9.17 methodology=1.0\n" % SHA
+LATE = "sha256=%s file=picks/2026-Q4.csv formation=2026-10-07 names=4 model=3.9.17 methodology=1.0 sealed=late entry_date=2026-10-08\n" % SHA
+
+
+def late_prices(entry="2026-10-08"):
+    return [price("NYSE:AAA", "US0000000001", "100", "110", entry_date=entry),
+            price("NASDAQ:BBB", "US0000000002", "50", "45", entry_date=entry),
+            price("NYSE:CCC", "US0000000003", "20", "25", entry_date=entry),
+            price("NYSE:DDD", "US0000000004", "10", "12", entry_date=entry),
+            price("NYSEARCA:RSP", "", "200", "204", "benchmark", entry_date=entry)]
+
+
+class SealedLate(unittest.TestCase):
+    """A portfolio sealed late by a human (its formation-day seal was missed) enters on its sealed entry day."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        for d in ("picks", "seals"):
+            os.makedirs(os.path.join(self.root, d))
+        with open(os.path.join(self.root, "picks", "2026-Q4.csv"), "w", encoding="utf-8") as f:
+            f.write("ticker,isin\n" + "".join("%s,%s\n" % (p["ticker"], p["isin"]) for p in PICKS))
+        with open(os.path.join(self.root, "README.md"), "w", encoding="utf-8") as f:
+            f.write("x\n%s\n%s\n" % (E.START, E.END))
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def seal(self, text):
+        with open(os.path.join(self.root, "seals", "2026-Q4.seal"), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def close(self, rows):
+        p = os.path.join(self.root, "prices.csv")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(E.to_csv(rows, [c for c in E.RESULT_COLUMNS if c != "total_return"]))
+        return E.main(["--root", self.root, "--close", "2026-Q4", "--prices", p, "--revealed", "2027-01-01"])
+
+    def readme(self):
+        return E.read_text(os.path.join(self.root, "README.md"))
+
+    def test_green_the_late_entry_is_read_from_the_seal(self):
+        self.seal(LATE)
+        self.assertEqual(E.late_entries(self.root), {"2026-Q4": "2026-10-08"})
+        self.seal(ON_TIME)
+        self.assertEqual(E.late_entries(self.root), {})
+
+    def test_green_an_open_late_portfolio_is_marked_sealed_late(self):
+        self.seal(LATE)
+        self.assertEqual(E.main(["--root", self.root, "--write"]), 0)
+        self.assertIn("| 2026-Q4 | 2026-10-07, sealed late (entry 2026-10-08) | [`00000000`](seals/2026-Q4.seal) | due 2027-01-01 |", self.readme())
+
+    def test_green_a_closed_late_portfolio_enters_on_its_day_and_is_marked(self):
+        self.seal(LATE)
+        self.assertEqual(self.close(late_prices()), 0)
+        self.assertEqual(E.main(["--root", self.root]), 0)  # the check agrees
+        self.assertIn("| [2026-Q4](results/2026-Q4.csv) | 2026-10-07, sealed late (entry 2026-10-08) |", self.readme())
+        s = E.read_csv(os.path.join(self.root, "results", "summary.csv"))[0]
+        self.assertEqual((s["chosen"], s["entry_date"]), ("2026-10-07", "2026-10-08"))
+
+    def test_green_an_on_time_portfolio_is_not_marked(self):
+        self.seal(ON_TIME)
+        self.assertEqual(self.close(late_prices("2026-10-01")), 0)
+        self.assertNotIn("sealed late", self.readme())
+
+    def test_red_a_late_portfolio_whose_results_enter_on_another_day(self):
+        self.seal(LATE)
+        self.assertEqual(self.close(late_prices("2026-10-01")), 1)  # the quarter's first open, not the sealed entry
+        self.assertFalse(os.path.exists(os.path.join(self.root, "results", "summary.csv")))
+
+    def test_red_a_malformed_late_seal(self):
+        self.seal(ON_TIME.strip() + " entry_date=2026-10-08\n")  # no sealed=late
+        self.assertEqual(E.main(["--root", self.root, "--write"]), 1)
+
+    def test_green_the_chain_allows_a_late_entry_in_its_own_quarter(self):
+        rows = E.chain([summary_row("2026-Q4", "2026-10-01", "2026-12-31", "0.1", "0"),
+                        summary_row("2027-Q1", "2027-02-16", "2027-03-31", "0.1", "0")], {"2027-Q1": "2027-02-16"})
+        self.assertEqual(rows[1]["cumulative_growth_of_1"], "1.210000")
+
+    def test_red_the_same_late_entry_without_a_late_seal_is_a_gap(self):
+        with self.assertRaisesRegex(E.EvaluationError, "gap or an overlap"):
+            E.chain([summary_row("2026-Q4", "2026-10-01", "2026-12-31", "0.1", "0"),
+                     summary_row("2027-Q1", "2027-02-16", "2027-03-31", "0.1", "0")])
+
+    def test_red_a_late_entry_outside_its_quarter(self):
+        with self.assertRaisesRegex(E.EvaluationError, "gap or an overlap"):
+            E.chain([summary_row("2026-Q4", "2026-10-01", "2026-12-31", "0.1", "0"),
+                     summary_row("2027-Q1", "2027-04-01", "2027-06-30", "0.1", "0")], {"2027-Q1": "2027-04-01"})
+
+
 def chain_of(values):
     """Summary rows with given (record, benchmark) growth values, one per quarter from 2026-Q1."""
     return [{"portfolio": "2026-Q%d" % (i + 1), "cumulative_growth_of_1": E.r6(g), "cumulative_rsp": E.r6(b)}
