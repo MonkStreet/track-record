@@ -42,20 +42,6 @@ Since launch: no portfolio has closed yet.
 
 [`scripts/evaluate.py`](scripts/evaluate.py) calculates every number above from the files in this repository. You can run it yourself.
 
-## A note from the founder
-
-> Hi, I'm Alberto, the founder of MonkStreet.
->
-> I don't trust track records, and you shouldn't either. A backtest can always look good, because it is made with hindsight. So this record only shows portfolios that were locked before the market opened. Good quarters and bad ones stay on this page.
->
-> You can check the list, the date and the arithmetic without us. Until reveal day, you cannot check that MonkScore was applied as written. Subscribers can, on the morning of the seal. And if MonkScore stops working, this page will show it first.
->
-> **Alberto Echevarría**  
-> The Investing Monk  
-> 1 October 2026
-
-**Conflict of interest:** MonkStreet sells access to these lists, and I may hold some of these stocks.
-
 ## How each quarter works
 
 | When | What happens |
@@ -162,6 +148,20 @@ The full rules are in [METHODOLOGY.md](METHODOLOGY.md) section 4.
 - A few quarters prove little. The result of one quarter is mostly chance. Look at the trend over years.
 - Real returns are lower. We do not deduct trading costs or taxes. Also, it is difficult to buy about 350 companies in equal amounts.
 - It is not advice. It shows how one rating did in the past. It does not tell you what to buy.
+
+## A note from the founder
+
+> Hi, I'm Alberto, the founder of MonkStreet.
+>
+> I don't trust track records, and you shouldn't either. A backtest can always look good, because it is made with hindsight. So this record only shows portfolios that were locked before the market opened. Good quarters and bad ones stay on this page.
+>
+> You can check the list, the date and the arithmetic without us. Until reveal day, you cannot check that MonkScore was applied as written. Subscribers can, on the morning of the seal. And if MonkScore stops working, this page will show it first.
+>
+> **Alberto Echevarría**  
+> The Investing Monk  
+> 1 October 2026
+
+**Conflict of interest:** MonkStreet sells access to these lists, and I may hold some of these stocks.
 
 ## Found a problem?
 
