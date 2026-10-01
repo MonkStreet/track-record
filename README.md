@@ -35,6 +35,7 @@ Each row is one portfolio. "Return" is the average return of its stocks, from th
 <!-- results:start -->
 | Portfolio | Chosen | Fingerprint | Revealed | Return | S&P 500 equal-weight | Excess | Note |
 |---|---|---|---|---|---|---|---|
+| 2026-Q4 | 2026-10-01 | [`53415ce3`](seals/2026-Q4.seal) | due 2027-01-01 | - | - | - | - |
 
 Since launch: no portfolio has closed yet.
 <!-- results:end -->
