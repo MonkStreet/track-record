@@ -44,17 +44,17 @@ Since launch: no portfolio has closed yet.
 
 ## A note from the founder
 
-Hi, I'm Alberto, the founder of MonkStreet.
+> Hi, I'm Alberto, the founder of MonkStreet.
+>
+> I don't trust track records, and you shouldn't either. A backtest can always look good, because it is made with hindsight. So this record only shows portfolios that were locked before the market opened. Good quarters and bad ones stay on this page.
+>
+> You can check the list, the date and the arithmetic without us. Until reveal day, you cannot check that MonkScore was applied as written. Subscribers can, on the morning of the seal. And if MonkScore stops working, this page will show it first.
+>
+> **Alberto Echevarría**  
+> The Investing Monk  
+> 1 October 2026
 
-I don't trust track records, and you shouldn't either. A backtest can always look good, because it is made with hindsight. So this record only shows portfolios that were locked before the market opened. Good quarters and bad ones stay on this page.
-
-You can check the list, the date and the arithmetic without us. Until reveal day, you cannot check that MonkScore was applied as written. Subscribers can, on the morning of the seal. And if MonkScore stops working, this page will show it first.
-
-Alberto Echevarría  
-The Investing Monk  
-1 October 2026
-
-Conflict of interest: MonkStreet sells access to these lists, and I may hold some of these stocks.
+**Conflict of interest:** MonkStreet sells access to these lists, and I may hold some of these stocks.
 
 ## How each quarter works
 
