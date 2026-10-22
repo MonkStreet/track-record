@@ -4,6 +4,7 @@ Model and methodology versions. Newest first.
 
 | Date | Item | Version | Change |
 |---|---|---|---|
+| 2026-10-22 | Model | 3.10.1 | Past and live scores now use the same timing for new financial statements. Peer groups are more stable. One risk check changes for financial companies. More data for Japanese companies, from their official filings (EDINET). Two data fixes. Applies from 2027-Q1. |
 | 2026-10-03 | Model | 3.10.0 | Peers now include only companies of $300M or more. Applies from 2027-Q1. |
 | 2026-10-01 | Methodology | 1.0 | Clarification: how a late seal works. No change to any published portfolio. |
 | 2026-10-01 | Methodology | 1.0 | First published version |
