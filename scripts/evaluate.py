@@ -3,11 +3,22 @@
     python scripts/evaluate.py                 check: recompute everything, compare with the files
     python scripts/evaluate.py --write         rewrite results/summary.csv, results/equity.svg and the README results
     python scripts/evaluate.py --close 2026-Q4 --prices <file.csv> --revealed 2027-01-01
-                                               write results/2026-Q4.csv, then --write
+                                               write results/2026-Q4.csv and results/2026-Q4.sp500ew.csv, then --write
 
-Inputs: picks/*.csv, seals/*.seal, results/<portfolio>.csv (frozen at close) and, if present,
-results/interim.csv. Python standard library only. No network: the script never calls a price vendor.
-The benchmark is the S&P 500 equal-weight, measured through RSP (the benchmark row of each results file).
+Inputs: picks/*.csv, seals/*.seal, benchmarks/*.sp500.csv, results/<portfolio>.csv and
+results/<portfolio>.sp500ew.csv (both frozen at close).
+Python standard library only. No network: the script never calls a price vendor.
+
+THE BENCHMARK (methodology 1.1) is the S&P 500 Equal Weight Total Return, built from its members: every S&P 500
+member of the formation day, in benchmarks/<portfolio>.sp500.csv (the Wikipedia page "List of S&P 500 companies" as it
+stood at the start of that day, with the page's version number), each priced with the same rules as a pick and
+written to results/<portfolio>.sp500ew.csv. Its return is the mean of the members' returns. From 2027-Q1 the seal line
+also holds sp500=<SHA-256 of the member file> sp500_rev=<version number>, and the member file must match it.
+results/<portfolio>.csv holds the picks only.
+
+The prices file of --close has the columns group, ticker, isin, entry_date, entry_open, exit_date, exit_close, status.
+group is pick (one row per pick, by ISIN) or sp500ew (one row per member, ticker = the member's symbol).
+The window (entry day, exit day) is the one shared by every held row.
 
 A portfolio SEALED LATE (its formation-day seal was missed and a human sealed it later in the same
 quarter) has a seal line ending in "sealed=late entry_date=<date>". Its entry is that day's open, the
@@ -20,6 +31,7 @@ written (rounded) returns, so anyone can check them from results/summary.csv alo
 
 import argparse
 import csv
+import hashlib
 import io
 import math
 import os
@@ -27,11 +39,15 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BENCHMARKS = ("RSP",)
+LABEL = "S&P 500 equal weight"
+GROUPS = ("pick", "sp500ew")
 RESULT_COLUMNS = ["ticker", "isin", "entry_date", "entry_open", "exit_date", "exit_close", "total_return", "status"]
-SUMMARY_COLUMNS = ["portfolio", "chosen", "revealed", "entry_date", "exit_date", "names", "return", "rsp_return",
-                   "excess_vs_rsp", "cumulative_growth_of_1", "cumulative_rsp"]
-STATUSES = ("held", "trading ceased", "late entry", "benchmark")  # and "zero: <reason>"
+PRICE_COLUMNS = ["group"] + [c for c in RESULT_COLUMNS if c != "total_return"]
+SUMMARY_COLUMNS = ["portfolio", "chosen", "revealed", "entry_date", "exit_date", "names", "return", "sp500ew_names",
+                   "sp500ew_return", "excess_vs_sp500ew", "cumulative_growth_of_1", "cumulative_sp500ew"]
+MEMBER_COLUMNS = ["symbol", "security", "cik", "wikipedia_revision"]
+SP500_ROWS = (480, 520)  # the S&P 500 has about 503 lines (some companies have two share classes)
+STATUSES = ("held", "trading ceased", "late entry")  # and "zero: <reason>"
 START, END = "<!-- results:start -->", "<!-- results:end -->"
 
 
@@ -60,6 +76,11 @@ def formation_of(label):
     return "%s-%02d-01" % (label[:4], (int(label[-1]) - 1) * 3 + 1)
 
 
+def sha256_file(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 # ---- one portfolio --------------------------------------------------------------------------
 
 def member_return(row, exit_date):
@@ -77,7 +98,7 @@ def member_return(row, exit_date):
         raise EvaluationError("%s: missing entry open or exit close" % row["ticker"])
     if entry <= 0 or exit_ <= 0:
         raise EvaluationError("%s: a price is not positive" % row["ticker"])
-    if status in ("held", "benchmark", "late entry") and row["exit_date"] != exit_date:
+    if status in ("held", "late entry") and row["exit_date"] != exit_date:
         raise EvaluationError("%s: exit date %s is not the portfolio exit %s" % (row["ticker"], row["exit_date"], exit_date))
     if status == "trading ceased" and not (row["entry_date"] <= row["exit_date"] < exit_date):
         raise EvaluationError("%s: last trading day %s is not inside the window" % (row["ticker"], row["exit_date"]))
@@ -107,54 +128,76 @@ def from_series(ticker, isin, series, entry_date, exit_date, zero_reason=None):
     return row
 
 
-def build_results(picks, prices):
-    """picks: rows of picks/<Q>.csv. prices: RESULT_COLUMNS rows without total_return.
-    Returns the frozen rows of results/<Q>.csv: one per pick (pick-file order), then the RSP benchmark row."""
-    by_isin = {}
-    bench = {}
+def window_of(rows, what):
+    """(entry_date, exit_date): the days shared by every held row. A held row on other days is an error."""
+    days = set((r["entry_date"], r["exit_date"]) for r in rows if r["status"] == "held")
+    if len(days) != 1:
+        raise EvaluationError("%s: the held rows must share one entry day and one exit day, found %s"
+                              % (what, ", ".join("%s..%s" % d for d in sorted(days)) or "none"))
+    return days.pop()
+
+
+def build_results(picks, prices, members):
+    """picks: rows of picks/<Q>.csv. prices: PRICE_COLUMNS rows. members: rows of benchmarks/<Q>.sp500.csv.
+    Returns (results, sp500ew): the frozen rows of results/<Q>.csv (one per pick, pick-file order) and of
+    results/<Q>.sp500ew.csv (one per member, member-file order)."""
+    groups = {g: [] for g in GROUPS}
     for p in prices:
-        if p["status"] == "benchmark":
-            bench[p["ticker"].split(":")[-1]] = p
-        elif p["isin"] in by_isin:
-            raise EvaluationError("%s: two price rows" % p["isin"])
-        else:
-            by_isin[p["isin"]] = p
-    missing = [x["ticker"] for x in picks if x["isin"] not in by_isin]
-    if missing:
-        raise EvaluationError("no price row for: " + ", ".join(missing))
-    extra = set(by_isin) - set(x["isin"] for x in picks)
-    if extra:
-        raise EvaluationError("price rows for names not in the pick file: " + ", ".join(sorted(extra)))
-    for b in BENCHMARKS:
-        if b not in bench:
-            raise EvaluationError("no %s row" % b)
-    ordered = [by_isin[x["isin"]] for x in picks] + [bench[b] for b in BENCHMARKS]
-    entry_date, exit_date = bench["RSP"]["entry_date"], bench["RSP"]["exit_date"]
-    out = []
-    for p in ordered:
+        g = p.get("group", "")
+        if g not in GROUPS:
+            raise EvaluationError("%s: unknown group %r (pick or sp500ew)" % (p.get("ticker"), g))
+        groups[g].append(p)
+    entry_date, exit_date = window_of(prices, "prices")
+
+    def keyed(rows, key, what):
+        out = {}
+        for p in rows:
+            if p[key] in out:
+                raise EvaluationError("%s: two %s price rows" % (p[key], what))
+            out[p[key]] = p
+        return out
+
+    def same_set(have, want, what):
+        missing = [w for w in want if w not in have]
+        if missing:
+            raise EvaluationError("no %s price row for: %s" % (what, ", ".join(missing[:10])))
+        extra = sorted(set(have) - set(want))
+        if extra:
+            raise EvaluationError("%s price rows for names not in the list: %s" % (what, ", ".join(extra[:10])))
+
+    def frozen(p):
         ret = member_return(p, exit_date)  # checks the status first
         late = p["status"] in ("late entry", "trading ceased") and p["entry_date"] > entry_date
         if not p["status"].startswith("zero:") and p["entry_date"] != entry_date and not late:
             raise EvaluationError("%s: entry date %s is not the portfolio entry %s" % (p["ticker"], p["entry_date"], entry_date))
         row = {c: p.get(c, "") for c in RESULT_COLUMNS}
         row["total_return"] = r6(ret)
-        out.append(row)
-    return out
+        return row
+
+    by_isin = keyed(groups["pick"], "isin", "pick")
+    same_set(by_isin, [x["isin"] for x in picks], "pick")
+    by_sym = keyed(groups["sp500ew"], "ticker", "S&P 500 member")
+    same_set(by_sym, [m["symbol"] for m in members], "S&P 500 member")
+    return [frozen(by_isin[x["isin"]]) for x in picks], [frozen(by_sym[m["symbol"]]) for m in members]
 
 
-def summarize(label, results, chosen, revealed):
-    """One summary row without the chained columns."""
-    members = [r for r in results if r["status"] != "benchmark"]
-    bench = {r["ticker"].split(":")[-1]: r for r in results if r["status"] == "benchmark"}
-    for r in results:  # the committed returns must follow from the committed closes
-        if r["total_return"] != r6(member_return(r, bench["RSP"]["exit_date"])):
-            raise EvaluationError("%s %s: total_return does not follow from its closes" % (label, r["ticker"]))
-    ret = sum(float(r["total_return"]) for r in members) / len(members)
-    rsp = float(bench["RSP"]["total_return"])
-    return {"portfolio": label, "chosen": chosen, "revealed": revealed,
-            "entry_date": bench["RSP"]["entry_date"], "exit_date": bench["RSP"]["exit_date"],
-            "names": str(len(members)), "return": r6(ret), "rsp_return": r6(rsp),
-            "excess_vs_rsp": r6(float(r6(ret)) - float(r6(rsp)))}
+def mean_return(rows, label, what, exit_date):
+    if not rows:
+        raise EvaluationError("%s: no %s rows" % (label, what))
+    for r in rows:  # the committed returns must follow from the committed closes
+        if r["total_return"] != r6(member_return(r, exit_date)):
+            raise EvaluationError("%s %s %s: total_return does not follow from its closes" % (label, what, r["ticker"]))
+    return sum(float(r["total_return"]) for r in rows) / len(rows)
+
+
+def summarize(label, results, ew, chosen, revealed):
+    """One summary row without the chained columns. results: results/<Q>.csv rows; ew: results/<Q>.sp500ew.csv rows."""
+    entry_date, exit_date = window_of(results + ew, label)
+    ret = mean_return(results, label, "pick", exit_date)
+    ewr = mean_return(ew, label, "S&P 500 member", exit_date)
+    return {"portfolio": label, "chosen": chosen, "revealed": revealed, "entry_date": entry_date, "exit_date": exit_date,
+            "names": str(len(results)), "return": r6(ret), "sp500ew_names": str(len(ew)), "sp500ew_return": r6(ewr),
+            "excess_vs_sp500ew": r6(float(r6(ret)) - float(r6(ewr)))}
 
 
 def chain(rows, late=None):
@@ -165,7 +208,7 @@ def chain(rows, late=None):
     entry day, which may be any day of its quarter (cash at 0% from the formation day until then)."""
     late = late or {}
     rows = sorted(rows, key=lambda r: r["portfolio"])
-    g = rsp = 1.0
+    g = ew = 1.0
     prev = None
     for r in rows:
         if prev is not None:
@@ -180,8 +223,8 @@ def chain(rows, late=None):
                 raise EvaluationError("%s enters on %s, but %s exits on %s: the chain has a gap or an overlap"
                                       % (r["portfolio"], r["entry_date"], prev["portfolio"], prev["exit_date"]))
         g = float(r6(g * (1 + float(r["return"]))))
-        rsp = float(r6(rsp * (1 + float(r["rsp_return"]))))
-        r["cumulative_growth_of_1"], r["cumulative_rsp"] = r6(g), r6(rsp)
+        ew = float(r6(ew * (1 + float(r["sp500ew_return"]))))
+        r["cumulative_growth_of_1"], r["cumulative_sp500ew"] = r6(g), r6(ew)
         prev = r
     return rows
 
@@ -207,15 +250,18 @@ def to_csv(rows, columns):
     return buf.getvalue()
 
 
-def seals(root):
-    out = {}
+def seal_labels(root):
     d = os.path.join(root, "seals")
-    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
-        m = re.match(r"^(\d{4}-Q[1-4])\.seal$", f)
-        if m:
-            text = read_text(os.path.join(d, f))
-            out[m.group(1)] = re.search(r"formation=(\S+)", text).group(1)
-    return out
+    return [m.group(1) for m in (re.match(r"^(\d{4}-Q[1-4])\.seal$", f) for f in (sorted(os.listdir(d)) if os.path.isdir(d) else [])) if m]
+
+
+def seal_fields(root, label):
+    """The key=value fields of a seal line."""
+    return dict(re.findall(r"(\w+)=(\S+)", read_text(os.path.join(root, "seals", label + ".seal"))))
+
+
+def seals(root):
+    return {label: seal_fields(root, label)["formation"] for label in seal_labels(root)}
 
 
 def late_entries(root):
@@ -232,6 +278,33 @@ def late_entries(root):
                     raise EvaluationError("%s: a late seal needs \"sealed=late entry_date=<date>\" at the end of its line" % m.group(1))
                 out[m.group(1)] = x.group(1)
     return out
+
+
+def members_of(root, label):
+    """benchmarks/<Q>.sp500.csv, checked: its columns, about 500 members, no symbol twice, one page version number,
+    and, for a seal made under methodology 1.1 or later (from 2027-Q1), the sp500= and sp500_rev= of the seal."""
+    path = os.path.join(root, "benchmarks", label + ".sp500.csv")
+    if not os.path.exists(path):
+        raise EvaluationError("%s: no benchmarks/%s.sp500.csv (the S&P 500 members of the formation day)" % (label, label))
+    rows = read_csv(path)
+    if not rows or list(rows[0].keys()) != MEMBER_COLUMNS:
+        raise EvaluationError("benchmarks/%s.sp500.csv: the columns must be %s" % (label, ",".join(MEMBER_COLUMNS)))
+    if not SP500_ROWS[0] <= len(rows) <= SP500_ROWS[1]:
+        raise EvaluationError("benchmarks/%s.sp500.csv: %d members, not %d to %d" % (label, len(rows), SP500_ROWS[0], SP500_ROWS[1]))
+    syms = [r["symbol"] for r in rows]
+    if len(set(syms)) != len(syms) or not all(syms):
+        raise EvaluationError("benchmarks/%s.sp500.csv: a symbol is empty or listed twice" % label)
+    revs = set(r["wikipedia_revision"] for r in rows)
+    rev = revs.pop() if len(revs) == 1 else ""
+    if not re.match(r"^\d+$", rev):
+        raise EvaluationError("benchmarks/%s.sp500.csv: one page version number on every row" % label)
+    f = seal_fields(root, label) if os.path.exists(os.path.join(root, "seals", label + ".seal")) else {}
+    if f and f.get("methodology") != "1.0":
+        if sha256_file(path) != f.get("sp500"):
+            raise EvaluationError("benchmarks/%s.sp500.csv does not match the sp500= fingerprint of its seal" % label)
+        if f.get("sp500_rev") != rev:
+            raise EvaluationError("benchmarks/%s.sp500.csv is page version %s, the seal says %s" % (label, rev, f.get("sp500_rev")))
+    return rows
 
 
 def chosen_cell(chosen, label, late):
@@ -258,11 +331,21 @@ def compute_summary(root, revealed):
     """revealed: {label: date}. Taken from the committed summary, or given by --close."""
     chosen = seals(root)
     late = late_entries(root)
+    closed = closed_labels(root)
+    for label in seal_labels(root):  # from 2027-Q1 the member list is published with the seal and must match it
+        if label not in closed and seal_fields(root, label).get("methodology") != "1.0":
+            members_of(root, label)
     rows = []
-    for label in closed_labels(root):
+    for label in closed:
         if label not in revealed:
             raise EvaluationError("%s: no reveal date" % label)
-        row = summarize(label, read_csv(os.path.join(root, "results", label + ".csv")), chosen.get(label, ""), revealed[label])
+        ew_path = os.path.join(root, "results", label + ".sp500ew.csv")
+        if not os.path.exists(ew_path):
+            raise EvaluationError("%s: results/%s.sp500ew.csv is missing" % (label, label))
+        ew = read_csv(ew_path)
+        if [r["ticker"] for r in ew] != [m["symbol"] for m in members_of(root, label)]:
+            raise EvaluationError("%s: results/%s.sp500ew.csv does not list the members of benchmarks/%s.sp500.csv" % (label, label, label))
+        row = summarize(label, read_csv(os.path.join(root, "results", label + ".csv")), ew, chosen.get(label, ""), revealed[label])
         if label in late and row["entry_date"] != late[label]:
             raise EvaluationError("%s was sealed late with entry %s, but its results enter on %s" % (label, late[label], row["entry_date"]))
         rows.append(row)
@@ -274,34 +357,29 @@ def pct(x):
 
 
 def results_block(summary, root):
-    header = ["| Portfolio | Chosen | Fingerprint | Revealed | Return | S&P 500 equal-weight | Excess | Note |", "|---|---|---|---|---|---|---|---|"]
+    header = ["| Portfolio | Chosen | Fingerprint | Revealed | Return | %s | Excess | Note |" % LABEL, "|---|---|---|---|---|---|---|---|"]
     lines = []
     late = late_entries(root)
     for r in summary:
         note = "notes/%s.md" % r["portfolio"]
         lines.append("| [%s](results/%s.csv) | %s | %s | %s | %s | %s | %s | %s |" % (
             r["portfolio"], r["portfolio"], chosen_cell(r["chosen"], r["portfolio"], late), fingerprint_cell(root, r["portfolio"]), r["revealed"], pct(r["return"]),
-            pct(r["rsp_return"]), pct(r["excess_vs_rsp"]),
+            pct(r["sp500ew_return"]), pct(r["excess_vs_sp500ew"]),
             "[note](%s)" % note if os.path.exists(os.path.join(root, note)) else "-"))
     closed = set(r["portfolio"] for r in summary)
-    interim_path = os.path.join(root, "results", "interim.csv")
-    interim = {r["portfolio"]: r for r in read_csv(interim_path)} if os.path.exists(interim_path) else {}
     for label, chosen in sorted(seals(root).items()):
         if label in closed:
-            continue
-        i = interim.get(label)
-        figs = ([pct(i["return"]) + " INTERIM", pct(i["rsp_return"]), pct(float(i["return"]) - float(i["rsp_return"]))]
-                if i else ["-", "-", "-"])
-        lines.append("| %s | %s | %s | due %s | %s | - |" % (label, chosen_cell(chosen, label, late), fingerprint_cell(root, label), formation_of(quarter_shift(label, 1)), " | ".join(figs)))
+            continue  # an open quarter shows no figures (METHODOLOGY section 6)
+        lines.append("| %s | %s | %s | due %s | - | - | - | - |" % (label, chosen_cell(chosen, label, late), fingerprint_cell(root, label), formation_of(quarter_shift(label, 1))))
     # Newest first: the open quarter, then the latest closed one. Rows sort by portfolio label.
     lines = header + sorted(lines, key=lambda l: l.split("|")[1].strip().strip("[").split("]")[0], reverse=True)
     lines.append("")
     if summary:
         last = summary[-1]
-        lines.append("Since launch: $1 in the record is now $%.2f. In the S&P 500 equal-weight: $%.2f." % (
-            float(last["cumulative_growth_of_1"]), float(last["cumulative_rsp"])))
+        lines.append("Since launch: $1 in the record is now $%.2f. In the %s: $%.2f." % (
+            float(last["cumulative_growth_of_1"]), LABEL, float(last["cumulative_sp500ew"])))
         lines.append("")
-        lines.append("![Growth of $1: the MonkScore 90+ record and the S&P 500 equal-weight, one point for each closed quarter](results/equity.svg)")
+        lines.append("![Growth of $1: the MonkScore 90+ record and the S&P 500 equal weight, one point for each closed quarter](results/equity.svg)")
     else:
         lines.append("Since launch: no portfolio has closed yet.")
     return "\n".join(lines)
@@ -322,11 +400,11 @@ def nice_step(span):
 
 
 def equity_svg(summary):
-    """Growth of $1: the record and the S&P 500 equal-weight. One point per closed quarter, from 1.00.
+    """Growth of $1: the record and the S&P 500 equal weight. One point per closed quarter, from 1.00.
     Plain SVG: no script, no external font. The same summary always gives the same bytes."""
     labels = ["Start"] + [r["portfolio"] for r in summary]
     record = [1.0] + [float(r["cumulative_growth_of_1"]) for r in summary]
-    bench = [1.0] + [float(r["cumulative_rsp"]) for r in summary]
+    bench = [1.0] + [float(r["cumulative_sp500ew"]) for r in summary]
     step = nice_step(max(record + bench) - min(record + bench) or 0.1)
     lo = math.floor(min(record + bench) / step + 1e-9) * step
     hi = math.ceil(max(record + bench) / step - 1e-9) * step
@@ -343,7 +421,7 @@ def equity_svg(summary):
 
     out = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" '
            'font-family="sans-serif" font-size="12" role="img" aria-labelledby="t">' % (SVG_W, SVG_H, SVG_W, SVG_H),
-           '<title id="t">Growth of $1: MonkScore 90+ record and S&amp;P 500 equal-weight, by closed quarter</title>',
+           '<title id="t">Growth of $1: MonkScore 90+ record and S&amp;P 500 equal weight, by closed quarter</title>',
            '<rect width="%d" height="%d" fill="#fcfcfb"/>' % (SVG_W, SVG_H)]
     ticks = int(round((hi - lo) / step))
     for k in range(ticks + 1):
@@ -364,7 +442,7 @@ def equity_svg(summary):
             out.append('<circle cx="%.1f" cy="%.1f" r="4" fill="%s" stroke="#fcfcfb" stroke-width="2"/>' % (x(i), y(v), color))
         out.append('<text x="%.1f" y="%.1f" fill="#0b0b0b">$%.2f</text>' % (x(n - 1) + 10, y(values[-1]) + 4, values[-1]))
     for k, (color, dash, name) in enumerate(((RECORD_COLOR, "", "MonkScore 90+ record"),
-                                            (BENCH_COLOR, ' stroke-dasharray="6 4"', "S&amp;P 500 equal-weight"))):
+                                            (BENCH_COLOR, ' stroke-dasharray="6 4"', "S&amp;P 500 equal weight"))):
         lx, ly = SVG_LEFT + k * 220, 24
         out.append('<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="2"%s/>' % (lx, ly, lx + 24, ly, color, dash))
         out.append('<text x="%d" y="%d" fill="#0b0b0b">%s</text>' % (lx + 30, ly + 4, name))
@@ -399,13 +477,15 @@ def main(argv=None):
         if a.close:
             if not (a.prices and a.revealed):
                 raise EvaluationError("--close needs --prices and --revealed")
-            out = os.path.join(root, "results", a.close + ".csv")
-            if os.path.exists(out):
-                raise EvaluationError("results/%s.csv exists. A closed report never changes." % a.close)
-            rows = build_results(read_csv(os.path.join(root, "picks", a.close + ".csv")), read_csv(a.prices))
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out, "w", newline="", encoding="utf-8") as f:
-                f.write(to_csv(rows, RESULT_COLUMNS))
+            outs = [os.path.join(root, "results", a.close + x) for x in (".csv", ".sp500ew.csv")]
+            for out in outs:
+                if os.path.exists(out):
+                    raise EvaluationError("results/%s exists. A closed report never changes." % os.path.basename(out))
+            built = build_results(read_csv(os.path.join(root, "picks", a.close + ".csv")), read_csv(a.prices), members_of(root, a.close))
+            os.makedirs(os.path.dirname(outs[0]), exist_ok=True)
+            for out, rows in zip(outs, built):
+                with open(out, "w", newline="", encoding="utf-8") as f:
+                    f.write(to_csv(rows, RESULT_COLUMNS))
             revealed[a.close] = a.revealed
             a.write = True
         summary = compute_summary(root, revealed)

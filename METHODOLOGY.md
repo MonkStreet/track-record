@@ -1,6 +1,6 @@
 # Methodology
 
-Version 1.0. In force from 1 October 2026.
+Version 1.1. In force from 26 October 2026. Version 1.0 was in force from 1 October 2026; [CHANGELOG.md](CHANGELOG.md) lists what changed.
 These rules govern every portfolio in this repository. They change only under section 9.
 All times are New York time (America/New_York).
 
@@ -28,7 +28,7 @@ We publish the seal before the 9:30 open of the first US trading day of the quar
 
 | When | We publish |
 |---|---|
-| Formation day (seal) | `seals/YYYY-QN.seal`: one line with the SHA-256 fingerprint of `picks/YYYY-QN.csv`, the formation date, the number of names, and the model and methodology versions |
+| Formation day (seal) | `seals/YYYY-QN.seal`: one line with the SHA-256 fingerprint of `picks/YYYY-QN.csv`, the formation date, the number of names, and the model and methodology versions. From 2027-Q1, also the fingerprint of the S&P 500 member list and its page version number (section 5) |
 | | `seals/YYYY-QN.seal.ots`: an OpenTimestamps proof that the seal existed that day |
 | | A GitHub release with the tag `YYYY-QN`. It attaches the `.seal` file and its `.ots` proof. |
 | Next formation day (reveal) | `picks/YYYY-QN.csv`, byte for byte the sealed file. The release is marked as revealed. |
@@ -98,22 +98,37 @@ A gap in the vendor data is never valued at zero.
 
 ## 5. Benchmark
 
-The benchmark is the S&P 500 equal-weighted index, over the same window.
-We measure it through RSP, an ETF that tracks it. RSP gets the same price rules as a pick.
+The benchmark is the S&P 500 Equal Weight Total Return (built by us from its members), over the same window.
+Every member gets the same weight, and dividends are included. Unlike the official index, we do not change the members or the weights during the quarter.
 
-Why equal weight: the portfolio gives each company the same weight, and so does the benchmark.
-An index weighted by company size lets a few very large companies drive it.
-Against such an index, a gap mixes two effects: picking skill and company size. Against an equal-weight index, the gap shows mostly picking skill.
-Some size difference remains: the portfolio goes down to $300M, and the benchmark holds only S&P 500 companies.
+The members are every company in the S&P 500 on the formation day.
+Each member gets the same price rules as a pick (section 4): the open of the entry day and the close of the exit day, adjusted for dividends.
+The benchmark return is the mean of the members' returns.
+
+We take the members from the Wikipedia page "List of S&P 500 companies", as it stood at the start of the formation day (New York time).
+We publish that list in `benchmarks/YYYY-QN.sp500.csv`, with the version number of the page. Anyone can open that version on Wikipedia and compare.
+The list is by Wikipedia contributors, under the CC BY-SA 4.0 licence.
+
+Why this benchmark:
+
+- The portfolio gives each company the same weight, and so does this benchmark. So the gap is not driven by a few very large companies.
+- We price the members directly, not through a fund. A fund's return comes after its fees, which would make the benchmark look lower and our result look better than it is.
+- Anyone can rebuild it from the published member list and prices.
+
+Some size difference remains: the portfolio goes down to $300M, and the benchmark holds only S&P 500 companies. So size can still move the gap, up or down.
+
+2026-Q4 also uses this benchmark, with the member list of 1 October 2026.
 
 ## 6. Results
 
 | File | When | Contents |
 |---|---|---|
-| `results/interim.csv` | Each month, replaced | The open portfolio, marked to market and labelled `INTERIM`. These figures are not final. |
-| `results/YYYY-QN.csv` | At close | One row for each pick, then the benchmark (RSP): `ticker`, `isin`, `entry_date`, `entry_open`, `exit_date`, `exit_close`, `total_return`, `status` |
-| `results/summary.csv` | At close, one new row | `portfolio`, `chosen`, `revealed`, `entry_date`, `exit_date`, `names`, `return`, `rsp_return`, `excess_vs_rsp`, `cumulative_growth_of_1`, `cumulative_rsp` |
+| `results/YYYY-QN.csv` | At close | One row for each pick: `ticker`, `isin`, `entry_date`, `entry_open`, `exit_date`, `exit_close`, `total_return`, `status` |
+| `results/YYYY-QN.sp500ew.csv` | At close | One row for each member of the benchmark (section 5), with the same columns |
+| `results/summary.csv` | At close, one new row | `portfolio`, `chosen`, `revealed`, `entry_date`, `exit_date`, `names`, `return`, `sp500ew_names`, `sp500ew_return`, `excess_vs_sp500ew`, `cumulative_growth_of_1`, `cumulative_sp500ew` |
 | `results/equity.svg` | At close, replaced | Growth of $1 for the record and the benchmark, one point for each closed quarter |
+
+We publish only quarterly portfolios. Each is sealed at the start of its quarter. Its list and its results are revealed together when the quarter ends. We publish no figures for a quarter that is still open.
 
 At each reveal, we also publish a short note on the portfolio: `notes/YYYY-QN.md`.
 
@@ -124,7 +139,7 @@ We report results. We make no statistical claims.
 
 ## 7. Integrity
 
-- These files never change after commit: `picks/`, `seals/*.seal` and `results/YYYY-QN.csv`.
+- These files never change after commit: `picks/`, `benchmarks/`, `seals/*.seal`, `results/YYYY-QN.csv` and `results/YYYY-QN.sp500ew.csv`.
 - `results/summary.csv` only gets new rows.
 - A `.seal.ots` proof changes once: we complete it when Bitcoin confirms it, a few hours after the seal.
 - We correct errors in new commits and log them in [ERRATA.md](ERRATA.md): what was wrong, what changed, and why.

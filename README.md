@@ -6,7 +6,7 @@
 
 ### What is this?
 
-Every quarter, we take all US stocks with a MonkScore of 90 or more. We treat them as one portfolio. At the end of the quarter, we publish how that portfolio did, next to the S&P 500 equal-weight. The table under "Results" is the track record.
+Every quarter, we take all US stocks with a MonkScore of 90 or more. We treat them as one portfolio. At the end of the quarter, we publish how that portfolio did, next to the S&P 500 equal weight, with dividends. The table under "Results" is the track record.
 
 ### Where is this quarter's list?
 
@@ -30,10 +30,10 @@ Subscribe at [monk.st](https://monk.st). Or come back here when the quarter ends
 
 ## Results
 
-Each row is one portfolio. "Return" is the average return of its stocks, from the first open of the quarter to the last close, before costs. "Excess" is that return minus the S&P 500 equal-weight over the same days. The top row is the current quarter: its list is sealed, so it shows only the fingerprint until the quarter ends. Open a quarter to see every stock and its prices, or read its note to see what drove the result.
+Each row is one portfolio. "Return" is the average return of its stocks, from the first open of the quarter to the last close, before costs. "Excess" is that return minus the S&P 500 equal weight, with dividends, over the same days. The top row is the current quarter: its list is sealed, so it shows only the fingerprint until the quarter ends. Open a quarter to see every stock and its prices, or read its note to see what drove the result.
 
 <!-- results:start -->
-| Portfolio | Chosen | Fingerprint | Revealed | Return | S&P 500 equal-weight | Excess | Note |
+| Portfolio | Chosen | Fingerprint | Revealed | Return | S&P 500 equal weight | Excess | Note |
 |---|---|---|---|---|---|---|---|
 | 2026-Q4 | 2026-10-01 | [`53415ce3`](seals/2026-Q4.seal) | due 2027-01-01 | - | - | - | - |
 
@@ -65,10 +65,10 @@ Below is each way a track record can be faked, why it does not work here, and ho
 | Choose the winners after the quarter | The fingerprint of the list is public before the quarter starts. At the end, the list must match it exactly. | [Check the list](#check-the-list) |
 | Say a fingerprint is older than it is | An OpenTimestamps proof records the fingerprint in the Bitcoin blockchain. The GitHub release of the quarter attaches the seal and the proof. | [Check the date](#check-the-date) |
 | Remove a bad quarter | We only add results. Copies outside our control can keep the old files. | [Check for deletions](#check-for-deletions) |
-| Change the rules after a bad quarter | Methodology 1.0 sets the rules. A change applies only to later portfolios, and we announce it one month before. | [METHODOLOGY.md](METHODOLOGY.md) section 9 and [CHANGELOG.md](CHANGELOG.md) |
+| Change the rules after a bad quarter | Methodology 1.1 sets the rules. A change applies only to later portfolios, and we announce it one month before. | [METHODOLOGY.md](METHODOLOGY.md) section 9 and [CHANGELOG.md](CHANGELOG.md) |
 | Leave out companies that collapsed | Each company stays in its portfolio until the end of the quarter. | [Corporate actions](#corporate-actions) |
 | Use a price that nobody could get | Each portfolio starts at the 9:30 open after the fingerprint is public. | [Check the prices and the numbers](#check-the-prices-and-the-numbers) |
-| Use an easy benchmark | The S&P 500 equal-weight gives each company the same weight, as our portfolio does. | [METHODOLOGY.md](METHODOLOGY.md) section 5 |
+| Use an easy benchmark | The S&P 500 equal weight, with dividends, gives each company the same weight, as our portfolio does. | [METHODOLOGY.md](METHODOLOGY.md) section 5 |
 | Choose companies by hand | The list has every company that meets the rule on that day. | On the first day of the quarter, subscribers can make the same list on [app.monk.st](https://app.monk.st) |
 | Make up the numbers | All numbers come from the files in this repository and one public script. | [Check the prices and the numbers](#check-the-prices-and-the-numbers) |
 
@@ -112,14 +112,14 @@ Git commit times are not a date proof. Anyone can set the time of a commit, and 
 Run this command in a clone:
 
 ```
-git log --diff-filter=D --oneline -- picks/ seals/ results/
+git log --diff-filter=D --oneline -- picks/ seals/ results/ benchmarks/
 ```
 
 It must show nothing. Public archives, such as [Software Heritage](https://www.softwareheritage.org), also copy public repositories. A deletion shows if someone already cloned or archived the repository.
 
 ### Check the prices and the numbers
 
-`results/<quarter>.csv` holds the entry open and the exit close of each name, in the columns `entry_open` and `exit_close`. The columns `entry_date` and `exit_date` give the day of each price. The prices come from a commercial market-data vendor and are dividend-adjusted. Every price is public. You can check any name against any free price source.
+`results/<quarter>.csv` holds the entry open and the exit close of each name, in the columns `entry_open` and `exit_close`. `results/<quarter>.sp500ew.csv` holds the same for each S&P 500 member in `benchmarks/<quarter>.sp500.csv`. The columns `entry_date` and `exit_date` give the day of each price. The prices come from a commercial market-data vendor and are dividend-adjusted. Every price is public. You can check any name against any free price source.
 
 [`scripts/evaluate.py`](scripts/evaluate.py) uses only the files in this repository. It never calls a price vendor. Run it in a clone:
 
