@@ -15,13 +15,15 @@ MEMBERS = [{"symbol": "M%03d" % i, "security": "Member %d" % i, "cik": "%010d" %
            for i in range(500)]
 
 
-def price(ticker, isin, entry, exit_, status="held", entry_date="2026-10-01", exit_date="2026-12-31", group="pick"):
+def price(ticker, isin, entry, exit_, status="held", entry_date="2026-10-01", exit_date="2026-12-31", group="pick",
+          market_value=""):
     return {"group": group, "ticker": ticker, "isin": isin, "entry_date": entry_date, "entry_open": entry,
-            "exit_date": exit_date, "exit_close": exit_, "status": status}
+            "exit_date": exit_date, "exit_close": exit_, "status": status, "market_value": market_value}
 
 
 def member_prices(entry_date="2026-10-01"):
-    return [price(m["symbol"], "", "100", "102", entry_date=entry_date, group="sp500ew") for m in MEMBERS]  # +2% each
+    return [price(m["symbol"], "", "100", "102", entry_date=entry_date, group="sp500ew", market_value="1000000000")
+            for m in MEMBERS]  # +2% each, the same size each
 
 
 def prices():
@@ -53,11 +55,43 @@ class OnePortfolio(unittest.TestCase):
         self.assertEqual((s["return"], s["sp500ew_return"], s["excess_vs_sp500ew"], s["names"], s["sp500ew_names"]),
                          ("-0.187500", "0.020000", "-0.207500", "4", "500"))
         self.assertEqual((s["entry_date"], s["exit_date"]), ("2026-10-01", "2026-12-31"))
+        self.assertEqual(s["sp500_return"], "0.020000")  # every member the same size: the two benchmarks agree
+        self.assertEqual(set(r["market_value"] for r in ew), {"1000000000"})
 
-    def test_green_one_benchmark_only(self):
+    def test_green_two_benchmarks_and_excess_against_the_equal_weight_only(self):
         self.assertEqual([c for c in E.SUMMARY_COLUMNS if "sp500" in c],
-                         ["sp500ew_names", "sp500ew_return", "excess_vs_sp500ew", "cumulative_sp500ew"])
+                         ["sp500ew_names", "sp500ew_return", "excess_vs_sp500ew", "cumulative_sp500ew",
+                          "sp500_return", "cumulative_sp500"])
         self.assertNotIn("benchmark", E.STATUSES)
+        self.assertNotIn("market_value", E.RESULT_COLUMNS)  # the picks carry no market value
+
+    def test_green_the_size_weighted_benchmark_weights_by_market_value(self):
+        p = prices()
+        p[4].update(exit_close="112", market_value="499000000000")  # M000: +12%, as large as the other 499 together
+        rows, ew = E.build_results(PICKS, p, MEMBERS)
+        s = E.summarize("2026-Q4", rows, ew, "2026-10-01", "2027-01-01")
+        self.assertEqual((s["sp500ew_return"], s["sp500_return"]), ("0.020200", "0.070000"))
+        self.assertEqual(s["excess_vs_sp500ew"], "-0.207700")  # excess stays against the equal weight
+
+    def test_red_a_member_without_a_market_value(self):
+        for bad in ("", "n/a"):
+            p = prices()
+            p[9]["market_value"] = bad
+            with self.assertRaisesRegex(E.EvaluationError, "M005: no market value"):
+                E.build_results(PICKS, p, MEMBERS)
+
+    def test_red_a_member_with_a_market_value_that_is_not_positive(self):
+        for bad in ("0", "-5", "nan", "inf"):
+            p = prices()
+            p[9]["market_value"] = bad
+            with self.assertRaisesRegex(E.EvaluationError, "M005: the market value is not positive"):
+                E.build_results(PICKS, p, MEMBERS)
+
+    def test_red_a_committed_market_value_removed_after_close(self):
+        rows, ew = E.build_results(PICKS, prices(), MEMBERS)
+        ew[7]["market_value"] = ""
+        with self.assertRaisesRegex(E.EvaluationError, "no market value"):
+            E.summarize("2026-Q4", rows, ew, "2026-10-01", "2027-01-01")
 
     def test_green_delisted_name_uses_last_close_then_cash(self):
         rows, _ = E.build_results(PICKS, prices(), MEMBERS)
@@ -243,16 +277,17 @@ class FromSeries(unittest.TestCase):
         self.assertEqual(r["status"], "zero: bankruptcy, no payout")
 
 
-def summary_row(label, entry, exit_, ret, ew):
-    return {"portfolio": label, "entry_date": entry, "exit_date": exit_, "return": ret, "sp500ew_return": ew}
+def summary_row(label, entry, exit_, ret, ew, sp=None):
+    return {"portfolio": label, "entry_date": entry, "exit_date": exit_, "return": ret, "sp500ew_return": ew,
+            "sp500_return": ew if sp is None else sp}
 
 
 class Chain(unittest.TestCase):
     def test_green_chaining(self):
-        rows = E.chain([summary_row("2026-Q4", "2026-10-01", "2026-12-31", "0.100000", "0.020000"),
-                        summary_row("2027-Q1", "2027-01-04", "2027-03-31", "-0.050000", "0.010000")])
-        self.assertEqual([(r["cumulative_growth_of_1"], r["cumulative_sp500ew"]) for r in rows],
-                         [("1.100000", "1.020000"), ("1.045000", "1.030200")])
+        rows = E.chain([summary_row("2026-Q4", "2026-10-01", "2026-12-31", "0.100000", "0.020000", "0.050000"),
+                        summary_row("2027-Q1", "2027-01-04", "2027-03-31", "-0.050000", "0.010000", "-0.020000")])
+        self.assertEqual([(r["cumulative_growth_of_1"], r["cumulative_sp500ew"], r["cumulative_sp500"]) for r in rows],
+                         [("1.100000", "1.020000", "1.050000"), ("1.045000", "1.030200", "1.029000")])
 
     def test_red_a_gap_between_portfolios(self):
         with self.assertRaisesRegex(E.EvaluationError, "gap or an overlap"):
@@ -278,8 +313,10 @@ class Chain(unittest.TestCase):
             write(root, "benchmarks/2026-Q4.sp500.csv", members_text())  # 2026-Q4: published at the reveal, its seal names no list
             p = write(root, "prices.csv", E.to_csv(prices(), E.PRICE_COLUMNS))
             self.assertEqual(E.main(["--root", root, "--close", "2026-Q4", "--prices", p, "--revealed", "2027-01-01"]), 0)
-            self.assertEqual(len(E.read_csv(os.path.join(root, "results", "2026-Q4.sp500ew.csv"))), 500)
-            self.assertEqual(len(E.read_csv(os.path.join(root, "results", "2026-Q4.csv"))), 4)  # the picks only
+            ew_rows = E.read_csv(os.path.join(root, "results", "2026-Q4.sp500ew.csv"))
+            self.assertEqual((len(ew_rows), list(ew_rows[0].keys())), (500, E.MEMBER_RESULT_COLUMNS))
+            pick_rows = E.read_csv(os.path.join(root, "results", "2026-Q4.csv"))
+            self.assertEqual((len(pick_rows), list(pick_rows[0].keys())), (4, E.RESULT_COLUMNS))  # the picks only
             self.assertEqual(E.main(["--root", root, "--close", "2026-Q4", "--prices", p, "--revealed", "2027-01-01"]), 1)  # frozen
             self.assertEqual(E.main(["--root", root]), 0)  # GREEN: the files agree
             sp = os.path.join(root, "results", "summary.csv")
@@ -288,9 +325,9 @@ class Chain(unittest.TestCase):
                 f.write(text.replace("0.812500", "0.900000"))  # plant a wrong cumulative value
             self.assertEqual(E.main(["--root", root]), 1)  # RED
             readme = E.read_text(os.path.join(root, "README.md"))
-            self.assertIn("Since launch: $1 in the record is now $0.81. In the S&P 500 equal weight: $1.02.", readme)
-            self.assertIn("| +2.00% | -20.75% | - |", readme)  # no note yet: no link
-            self.assertIn("| Return | S&P 500 equal weight | Excess | Note |", readme)
+            self.assertIn("Since launch: $1 in the record is now $0.81. In the S&P 500 equal weight: $1.02. In the S&P 500: $1.02.", readme)
+            self.assertIn("| +2.00% | +2.00% | -20.75% | - |", readme)  # no note yet: no link
+            self.assertIn("| Return | S&P 500 equal weight | S&P 500 | Excess | Note |", readme)
             with open(sp, "w", encoding="utf-8") as f:
                 f.write(text)  # restore the correct summary
             self.assertEqual(E.main(["--root", root]), 0)
@@ -298,6 +335,10 @@ class Chain(unittest.TestCase):
             ew = E.read_text(ewp)
             write(root, "results/2026-Q4.sp500ew.csv", ew.replace("M003,", "M999,"))
             self.assertEqual(E.main(["--root", root]), 1)  # RED: the member results no longer list the member file
+            write(root, "results/2026-Q4.sp500ew.csv", ew.replace(",1000000000\n", ",2000000000\n", 1))
+            self.assertEqual(E.main(["--root", root]), 0)  # one weight changed, all returns equal: still the same figures
+            write(root, "results/2026-Q4.sp500ew.csv", ew.replace(",1000000000\n", ",-1\n", 1))
+            self.assertEqual(E.main(["--root", root]), 1)  # RED: a committed market value that is not positive
             write(root, "results/2026-Q4.sp500ew.csv", ew)
             os.makedirs(os.path.join(root, "notes"))
             with open(os.path.join(root, "notes", "2026-Q4.md"), "w", encoding="utf-8") as f:
@@ -363,7 +404,7 @@ class SealedLate(unittest.TestCase):
     def test_green_an_open_late_portfolio_is_marked_sealed_late(self):
         self.seal(LATE)
         self.assertEqual(E.main(["--root", self.root, "--write"]), 0)
-        self.assertIn("| 2026-Q4 | 2026-10-07, sealed late (entry 2026-10-08) | [`00000000`](seals/2026-Q4.seal) | due 2027-01-01 | - | - | - | - |", self.readme())  # an open quarter shows no figures
+        self.assertIn("| 2026-Q4 | 2026-10-07, sealed late (entry 2026-10-08) | [`00000000`](seals/2026-Q4.seal) | due 2027-01-01 | - | - | - | - | - |", self.readme())  # an open quarter shows no figures
 
     def test_green_a_closed_late_portfolio_enters_on_its_day_and_is_marked(self):
         self.seal(LATE)
@@ -404,24 +445,26 @@ class SealedLate(unittest.TestCase):
 
 
 def chain_of(values):
-    """Summary rows with given (record, benchmark) growth values, one per quarter from 2026-Q1."""
-    return [{"portfolio": "2026-Q%d" % (i + 1), "cumulative_growth_of_1": E.r6(g), "cumulative_sp500ew": E.r6(b)}
-            for i, (g, b) in enumerate(values)]
+    """Summary rows with given (record, equal weight, by size) growth values, one per quarter from 2026-Q1."""
+    return [{"portfolio": "2026-Q%d" % (i + 1), "cumulative_growth_of_1": E.r6(g), "cumulative_sp500ew": E.r6(b),
+             "cumulative_sp500": E.r6(s)} for i, (g, b, s) in enumerate(values)]
 
 
 class EquityCurve(unittest.TestCase):
     def test_green_one_point_per_quarter_from_one_dollar(self):
-        svg = E.equity_svg(chain_of([(0.965283, 1.002791), (1.128302, 1.112480), (1.105335, 1.092729)]))
-        self.assertEqual(svg.count("<polyline"), 2)  # the record and the benchmark
-        self.assertEqual(svg.count("<circle"), 8)  # 1.00 plus three quarters, for each line
+        svg = E.equity_svg(chain_of([(0.965283, 1.002791, 1.01), (1.128302, 1.112480, 1.04), (1.105335, 1.092729, 1.25)]))
+        self.assertEqual(svg.count("<polyline"), 3)  # the record and the two benchmarks
+        self.assertEqual(svg.count("<circle"), 12)  # 1.00 plus three quarters, for each line
         for text in ("Start", "2026-Q1", "2026-Q3", "Growth of $1", "End of quarter", "MonkScore 90+ record",
-                     "S&amp;P 500 equal weight", "$1.11", "$1.09"):
+                     "S&amp;P 500 equal weight", ">S&amp;P 500<", "$1.11", "$1.09", "$1.25"):
             self.assertIn(text, svg)
-        first = [p.split(",") for p in svg.split('<polyline points="')[2].split('"')[0].split()]
+        first = [p.split(",") for p in svg.split('<polyline points="')[3].split('"')[0].split()]
         self.assertTrue(float(first[1][1]) > float(first[0][1]))  # the down quarter (Q1) goes down the page
+        top = float(svg.split('<polyline points="')[1].split('"')[0].split()[-1].split(",")[1])
+        self.assertTrue(top >= E.SVG_TOP)  # the axis takes the by-size line too: its 1.25 stays inside the chart
 
     def test_green_deterministic_and_self_contained(self):
-        rows = chain_of([(1.1, 1.02), (1.045, 1.0302)])
+        rows = chain_of([(1.1, 1.02, 1.05), (1.045, 1.0302, 1.029)])
         self.assertEqual(E.equity_svg(rows), E.equity_svg(rows))
         svg = E.equity_svg(rows)
         for banned in ("<script", "http://fonts", "https://", "@import", "href="):

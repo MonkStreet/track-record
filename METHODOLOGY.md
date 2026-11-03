@@ -1,6 +1,6 @@
 # Methodology
 
-Version 1.1. In force from 26 October 2026. Version 1.0 was in force from 1 October 2026; [CHANGELOG.md](CHANGELOG.md) lists what changed.
+Version 1.2. In force from 2 November 2026. Version 1.1 was in force from 26 October 2026, and version 1.0 from 1 October 2026; [CHANGELOG.md](CHANGELOG.md) lists what changed.
 These rules govern every portfolio in this repository. They change only under section 9.
 All times are New York time (America/New_York).
 
@@ -81,8 +81,8 @@ We do not model spread or market impact.
 |---|---|
 | Name return | Exit close / entry open - 1 |
 | Portfolio return | The mean of the name returns (equal weight at entry) |
-| Excess | Portfolio return - benchmark return |
-| Growth of $1 | The quarterly returns, compounded one quarter after the other. The same for the benchmark. |
+| Excess | Portfolio return - S&P 500 equal weight return |
+| Growth of $1 | The quarterly returns, compounded one quarter after the other. The same for each benchmark. |
 
 | Event during the hold | Treatment | `status` |
 |---|---|---|
@@ -96,10 +96,14 @@ We do not model spread or market impact.
 
 A gap in the vendor data is never valued at zero.
 
-## 5. Benchmark
+## 5. Benchmarks
 
-The benchmark is the S&P 500 Equal Weight Total Return (built by us from its members), over the same window.
-Every member gets the same weight, and dividends are included. Unlike the official index, we do not change the members or the weights during the quarter.
+We show two benchmarks, over the same window. Both are built by us from the same members, with dividends.
+
+- **S&P 500 equal weight** (the main benchmark): every member gets the same weight. "Excess" is measured against this one.
+- **S&P 500** (by size): every member is weighted by its market value at the close of the last trading day before the quarter starts. This is how the official S&P 500 is weighted, and it is the one most people know.
+
+Unlike the official indexes, we do not change the members or the weights during the quarter.
 
 The members are every company in the S&P 500 on the formation day.
 Each member gets the same price rules as a pick (section 4): the open of the entry day and the close of the exit day, adjusted for dividends.
@@ -109,24 +113,31 @@ We take the members from the Wikipedia page "List of S&P 500 companies", as it s
 We publish that list in `benchmarks/YYYY-QN.sp500.csv`, with the version number of the page. Anyone can open that version on Wikipedia and compare.
 The list is by Wikipedia contributors, under the CC BY-SA 4.0 licence.
 
-Why this benchmark:
+Each member's market value is its share price times its shares outstanding, from the same market-data vendor as the prices. We publish it, in US dollars, in the column `market_value` of `results/YYYY-QN.sp500ew.csv`.
+
+Why the equal weight is the main benchmark:
 
 - The portfolio gives each company the same weight, and so does this benchmark. So the gap is not driven by a few very large companies.
 - We price the members directly, not through a fund. A fund's return comes after its fees, which would make the benchmark look lower and our result look better than it is.
 - Anyone can rebuild it from the published member list and prices.
 
+Why we also show the S&P 500 by size:
+
+- It is the S&P 500 most people know, and the one on our home page.
+- In it, a few very large companies drive most of the result. When they do much better or worse than the rest, the two benchmarks move apart, and you can see by how much.
+
 Some size difference remains: the portfolio goes down to $300M, and the benchmark holds only S&P 500 companies. So size can still move the gap, up or down.
 
-2026-Q4 also uses this benchmark, with the member list of 1 October 2026.
+2026-Q4 also uses these benchmarks, with the member list of 1 October 2026.
 
 ## 6. Results
 
 | File | When | Contents |
 |---|---|---|
 | `results/YYYY-QN.csv` | At close | One row for each pick: `ticker`, `isin`, `entry_date`, `entry_open`, `exit_date`, `exit_close`, `total_return`, `status` |
-| `results/YYYY-QN.sp500ew.csv` | At close | One row for each member of the benchmark (section 5), with the same columns |
-| `results/summary.csv` | At close, one new row | `portfolio`, `chosen`, `revealed`, `entry_date`, `exit_date`, `names`, `return`, `sp500ew_names`, `sp500ew_return`, `excess_vs_sp500ew`, `cumulative_growth_of_1`, `cumulative_sp500ew` |
-| `results/equity.svg` | At close, replaced | Growth of $1 for the record and the benchmark, one point for each closed quarter |
+| `results/YYYY-QN.sp500ew.csv` | At close | One row for each member of the benchmarks (section 5), with the same columns, and `market_value` |
+| `results/summary.csv` | At close, one new row | `portfolio`, `chosen`, `revealed`, `entry_date`, `exit_date`, `names`, `return`, `sp500ew_names`, `sp500ew_return`, `excess_vs_sp500ew`, `cumulative_growth_of_1`, `cumulative_sp500ew`, `sp500_return`, `cumulative_sp500` |
+| `results/equity.svg` | At close, replaced | Growth of $1 for the record and both benchmarks, one point for each closed quarter |
 
 We publish only quarterly portfolios. Each is sealed at the start of its quarter. Its list and its results are revealed together when the quarter ends. We publish no figures for a quarter that is still open.
 

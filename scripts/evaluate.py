@@ -9,15 +9,18 @@ Inputs: picks/*.csv, seals/*.seal, benchmarks/*.sp500.csv, results/<portfolio>.c
 results/<portfolio>.sp500ew.csv (both frozen at close).
 Python standard library only. No network: the script never calls a price vendor.
 
-THE BENCHMARK (methodology 1.1) is the S&P 500 Equal Weight Total Return, built from its members: every S&P 500
-member of the formation day, in benchmarks/<portfolio>.sp500.csv (the Wikipedia page "List of S&P 500 companies" as it
-stood at the start of that day, with the page's version number), each priced with the same rules as a pick and
-written to results/<portfolio>.sp500ew.csv. Its return is the mean of the members' returns. From 2027-Q1 the seal line
+THE BENCHMARKS (methodology 1.2) are built from the same members: every S&P 500 member of the formation day, in
+benchmarks/<portfolio>.sp500.csv (the Wikipedia page "List of S&P 500 companies" as it stood at the start of that day,
+with the page's version number), each priced with the same rules as a pick and written to
+results/<portfolio>.sp500ew.csv with its market value at the close before the quarter (market_value, US dollars).
+The S&P 500 equal weight (the main benchmark, the one "excess" is measured against) is the mean of the members'
+returns. The S&P 500 (by size) is their mean weighted by market_value. From 2027-Q1 the seal line
 also holds sp500=<SHA-256 of the member file> sp500_rev=<version number>, and the member file must match it.
 results/<portfolio>.csv holds the picks only.
 
-The prices file of --close has the columns group, ticker, isin, entry_date, entry_open, exit_date, exit_close, status.
-group is pick (one row per pick, by ISIN) or sp500ew (one row per member, ticker = the member's symbol).
+The prices file of --close has the columns group, ticker, isin, entry_date, entry_open, exit_date, exit_close, status,
+market_value. group is pick (one row per pick, by ISIN; market_value empty) or sp500ew (one row per member, ticker = the
+member's symbol; market_value a positive number).
 The window (entry day, exit day) is the one shared by every held row.
 
 A portfolio SEALED LATE (its formation-day seal was missed and a human sealed it later in the same
@@ -40,11 +43,14 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LABEL = "S&P 500 equal weight"
+LABEL_SIZE = "S&P 500"
 GROUPS = ("pick", "sp500ew")
 RESULT_COLUMNS = ["ticker", "isin", "entry_date", "entry_open", "exit_date", "exit_close", "total_return", "status"]
-PRICE_COLUMNS = ["group"] + [c for c in RESULT_COLUMNS if c != "total_return"]
+MEMBER_RESULT_COLUMNS = RESULT_COLUMNS + ["market_value"]
+PRICE_COLUMNS = ["group"] + [c for c in RESULT_COLUMNS if c != "total_return"] + ["market_value"]
 SUMMARY_COLUMNS = ["portfolio", "chosen", "revealed", "entry_date", "exit_date", "names", "return", "sp500ew_names",
-                   "sp500ew_return", "excess_vs_sp500ew", "cumulative_growth_of_1", "cumulative_sp500ew"]
+                   "sp500ew_return", "excess_vs_sp500ew", "cumulative_growth_of_1", "cumulative_sp500ew",
+                   "sp500_return", "cumulative_sp500"]
 MEMBER_COLUMNS = ["symbol", "security", "cik", "wikipedia_revision"]
 SP500_ROWS = (480, 520)  # the S&P 500 has about 503 lines (some companies have two share classes)
 STATUSES = ("held", "trading ceased", "late entry")  # and "zero: <reason>"
@@ -128,6 +134,17 @@ def from_series(ticker, isin, series, entry_date, exit_date, zero_reason=None):
     return row
 
 
+def market_value(row):
+    """A member's market value at the close before the quarter: a positive number, or an error."""
+    try:
+        v = float(row.get("market_value", ""))
+    except (TypeError, ValueError):
+        raise EvaluationError("%s: no market value" % row["ticker"])
+    if not (v > 0 and math.isfinite(v)):
+        raise EvaluationError("%s: the market value is not positive" % row["ticker"])
+    return v
+
+
 def window_of(rows, what):
     """(entry_date, exit_date): the days shared by every held row. A held row on other days is an error."""
     days = set((r["entry_date"], r["exit_date"]) for r in rows if r["status"] == "held")
@@ -165,12 +182,14 @@ def build_results(picks, prices, members):
         if extra:
             raise EvaluationError("%s price rows for names not in the list: %s" % (what, ", ".join(extra[:10])))
 
-    def frozen(p):
+    def frozen(p, columns=RESULT_COLUMNS):
         ret = member_return(p, exit_date)  # checks the status first
         late = p["status"] in ("late entry", "trading ceased") and p["entry_date"] > entry_date
         if not p["status"].startswith("zero:") and p["entry_date"] != entry_date and not late:
             raise EvaluationError("%s: entry date %s is not the portfolio entry %s" % (p["ticker"], p["entry_date"], entry_date))
-        row = {c: p.get(c, "") for c in RESULT_COLUMNS}
+        if "market_value" in columns:
+            market_value(p)
+        row = {c: p.get(c, "") for c in columns}
         row["total_return"] = r6(ret)
         return row
 
@@ -178,7 +197,8 @@ def build_results(picks, prices, members):
     same_set(by_isin, [x["isin"] for x in picks], "pick")
     by_sym = keyed(groups["sp500ew"], "ticker", "S&P 500 member")
     same_set(by_sym, [m["symbol"] for m in members], "S&P 500 member")
-    return [frozen(by_isin[x["isin"]]) for x in picks], [frozen(by_sym[m["symbol"]]) for m in members]
+    return ([frozen(by_isin[x["isin"]]) for x in picks],
+            [frozen(by_sym[m["symbol"]], MEMBER_RESULT_COLUMNS) for m in members])
 
 
 def mean_return(rows, label, what, exit_date):
@@ -190,6 +210,12 @@ def mean_return(rows, label, what, exit_date):
     return sum(float(r["total_return"]) for r in rows) / len(rows)
 
 
+def size_weighted_return(rows):
+    """The members' returns weighted by their market value at the close before the quarter (mean_return checks the returns)."""
+    weights = [market_value(r) for r in rows]
+    return sum(w * float(r["total_return"]) for w, r in zip(weights, rows)) / sum(weights)
+
+
 def summarize(label, results, ew, chosen, revealed):
     """One summary row without the chained columns. results: results/<Q>.csv rows; ew: results/<Q>.sp500ew.csv rows."""
     entry_date, exit_date = window_of(results + ew, label)
@@ -197,7 +223,7 @@ def summarize(label, results, ew, chosen, revealed):
     ewr = mean_return(ew, label, "S&P 500 member", exit_date)
     return {"portfolio": label, "chosen": chosen, "revealed": revealed, "entry_date": entry_date, "exit_date": exit_date,
             "names": str(len(results)), "return": r6(ret), "sp500ew_names": str(len(ew)), "sp500ew_return": r6(ewr),
-            "excess_vs_sp500ew": r6(float(r6(ret)) - float(r6(ewr)))}
+            "excess_vs_sp500ew": r6(float(r6(ret)) - float(r6(ewr))), "sp500_return": r6(size_weighted_return(ew))}
 
 
 def chain(rows, late=None):
@@ -208,7 +234,7 @@ def chain(rows, late=None):
     entry day, which may be any day of its quarter (cash at 0% from the formation day until then)."""
     late = late or {}
     rows = sorted(rows, key=lambda r: r["portfolio"])
-    g = ew = 1.0
+    g = ew = sp = 1.0
     prev = None
     for r in rows:
         if prev is not None:
@@ -224,7 +250,8 @@ def chain(rows, late=None):
                                       % (r["portfolio"], r["entry_date"], prev["portfolio"], prev["exit_date"]))
         g = float(r6(g * (1 + float(r["return"]))))
         ew = float(r6(ew * (1 + float(r["sp500ew_return"]))))
-        r["cumulative_growth_of_1"], r["cumulative_sp500ew"] = r6(g), r6(ew)
+        sp = float(r6(sp * (1 + float(r["sp500_return"]))))
+        r["cumulative_growth_of_1"], r["cumulative_sp500ew"], r["cumulative_sp500"] = r6(g), r6(ew), r6(sp)
         prev = r
     return rows
 
@@ -357,29 +384,31 @@ def pct(x):
 
 
 def results_block(summary, root):
-    header = ["| Portfolio | Chosen | Fingerprint | Revealed | Return | %s | Excess | Note |" % LABEL, "|---|---|---|---|---|---|---|---|"]
+    header = ["| Portfolio | Chosen | Fingerprint | Revealed | Return | %s | %s | Excess | Note |" % (LABEL, LABEL_SIZE),
+              "|---|---|---|---|---|---|---|---|---|"]
     lines = []
     late = late_entries(root)
     for r in summary:
         note = "notes/%s.md" % r["portfolio"]
-        lines.append("| [%s](results/%s.csv) | %s | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| [%s](results/%s.csv) | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r["portfolio"], r["portfolio"], chosen_cell(r["chosen"], r["portfolio"], late), fingerprint_cell(root, r["portfolio"]), r["revealed"], pct(r["return"]),
-            pct(r["sp500ew_return"]), pct(r["excess_vs_sp500ew"]),
+            pct(r["sp500ew_return"]), pct(r["sp500_return"]), pct(r["excess_vs_sp500ew"]),
             "[note](%s)" % note if os.path.exists(os.path.join(root, note)) else "-"))
     closed = set(r["portfolio"] for r in summary)
     for label, chosen in sorted(seals(root).items()):
         if label in closed:
             continue  # an open quarter shows no figures (METHODOLOGY section 6)
-        lines.append("| %s | %s | %s | due %s | - | - | - | - |" % (label, chosen_cell(chosen, label, late), fingerprint_cell(root, label), formation_of(quarter_shift(label, 1))))
+        lines.append("| %s | %s | %s | due %s | - | - | - | - | - |" % (label, chosen_cell(chosen, label, late), fingerprint_cell(root, label), formation_of(quarter_shift(label, 1))))
     # Newest first: the open quarter, then the latest closed one. Rows sort by portfolio label.
     lines = header + sorted(lines, key=lambda l: l.split("|")[1].strip().strip("[").split("]")[0], reverse=True)
     lines.append("")
     if summary:
         last = summary[-1]
-        lines.append("Since launch: $1 in the record is now $%.2f. In the %s: $%.2f." % (
-            float(last["cumulative_growth_of_1"]), LABEL, float(last["cumulative_sp500ew"])))
+        lines.append("Since launch: $1 in the record is now $%.2f. In the %s: $%.2f. In the %s: $%.2f." % (
+            float(last["cumulative_growth_of_1"]), LABEL, float(last["cumulative_sp500ew"]),
+            LABEL_SIZE, float(last["cumulative_sp500"])))
         lines.append("")
-        lines.append("![Growth of $1: the MonkScore 90+ record and the S&P 500 equal weight, one point for each closed quarter](results/equity.svg)")
+        lines.append("![Growth of $1: the MonkScore 90+ record, the S&P 500 equal weight and the S&P 500, one point for each closed quarter](results/equity.svg)")
     else:
         lines.append("Since launch: no portfolio has closed yet.")
     return "\n".join(lines)
@@ -389,7 +418,7 @@ def results_block(summary, root):
 
 SVG_W, SVG_H = 720, 360
 SVG_LEFT, SVG_RIGHT, SVG_TOP, SVG_BOTTOM = 72, 64, 56, 56
-RECORD_COLOR, BENCH_COLOR = "#2a78d6", "#eb6834"
+RECORD_COLOR, BENCH_COLOR, SIZE_COLOR = "#2a78d6", "#eb6834", "#8a6d3b"
 
 
 def nice_step(span):
@@ -400,14 +429,16 @@ def nice_step(span):
 
 
 def equity_svg(summary):
-    """Growth of $1: the record and the S&P 500 equal weight. One point per closed quarter, from 1.00.
+    """Growth of $1: the record, the S&P 500 equal weight and the S&P 500. One point per closed quarter, from 1.00.
     Plain SVG: no script, no external font. The same summary always gives the same bytes."""
     labels = ["Start"] + [r["portfolio"] for r in summary]
     record = [1.0] + [float(r["cumulative_growth_of_1"]) for r in summary]
     bench = [1.0] + [float(r["cumulative_sp500ew"]) for r in summary]
-    step = nice_step(max(record + bench) - min(record + bench) or 0.1)
-    lo = math.floor(min(record + bench) / step + 1e-9) * step
-    hi = math.ceil(max(record + bench) / step - 1e-9) * step
+    size = [1.0] + [float(r["cumulative_sp500"]) for r in summary]
+    every = record + bench + size
+    step = nice_step(max(every) - min(every) or 0.1)
+    lo = math.floor(min(every) / step + 1e-9) * step
+    hi = math.ceil(max(every) / step - 1e-9) * step
     if hi - lo < step:
         lo, hi = lo - step, hi + step
     pw, ph = SVG_W - SVG_LEFT - SVG_RIGHT, SVG_H - SVG_TOP - SVG_BOTTOM
@@ -421,7 +452,7 @@ def equity_svg(summary):
 
     out = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" '
            'font-family="sans-serif" font-size="12" role="img" aria-labelledby="t">' % (SVG_W, SVG_H, SVG_W, SVG_H),
-           '<title id="t">Growth of $1: MonkScore 90+ record and S&amp;P 500 equal weight, by closed quarter</title>',
+           '<title id="t">Growth of $1: MonkScore 90+ record, S&amp;P 500 equal weight and S&amp;P 500, by closed quarter</title>',
            '<rect width="%d" height="%d" fill="#fcfcfb"/>' % (SVG_W, SVG_H)]
     ticks = int(round((hi - lo) / step))
     for k in range(ticks + 1):
@@ -435,14 +466,16 @@ def equity_svg(summary):
                % (SVG_LEFT + pw / 2, SVG_H - 12))
     out.append('<text x="16" y="%.1f" text-anchor="middle" fill="#0b0b0b" transform="rotate(-90 16 %.1f)">Growth of $1</text>'
                % (SVG_TOP + ph / 2, SVG_TOP + ph / 2))
-    for values, color, dash in ((bench, BENCH_COLOR, ' stroke-dasharray="6 4"'), (record, RECORD_COLOR, "")):
+    for values, color, dash in ((size, SIZE_COLOR, ' stroke-dasharray="2 4"'), (bench, BENCH_COLOR, ' stroke-dasharray="6 4"'),
+                                (record, RECORD_COLOR, "")):
         pts = " ".join("%.1f,%.1f" % (x(i), y(v)) for i, v in enumerate(values))
         out.append('<polyline points="%s" fill="none" stroke="%s" stroke-width="2"%s/>' % (pts, color, dash))
         for i, v in enumerate(values):
             out.append('<circle cx="%.1f" cy="%.1f" r="4" fill="%s" stroke="#fcfcfb" stroke-width="2"/>' % (x(i), y(v), color))
         out.append('<text x="%.1f" y="%.1f" fill="#0b0b0b">$%.2f</text>' % (x(n - 1) + 10, y(values[-1]) + 4, values[-1]))
     for k, (color, dash, name) in enumerate(((RECORD_COLOR, "", "MonkScore 90+ record"),
-                                            (BENCH_COLOR, ' stroke-dasharray="6 4"', "S&amp;P 500 equal weight"))):
+                                            (BENCH_COLOR, ' stroke-dasharray="6 4"', "S&amp;P 500 equal weight"),
+                                            (SIZE_COLOR, ' stroke-dasharray="2 4"', "S&amp;P 500"))):
         lx, ly = SVG_LEFT + k * 220, 24
         out.append('<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="2"%s/>' % (lx, ly, lx + 24, ly, color, dash))
         out.append('<text x="%d" y="%d" fill="#0b0b0b">%s</text>' % (lx + 30, ly + 4, name))
@@ -483,9 +516,9 @@ def main(argv=None):
                     raise EvaluationError("results/%s exists. A closed report never changes." % os.path.basename(out))
             built = build_results(read_csv(os.path.join(root, "picks", a.close + ".csv")), read_csv(a.prices), members_of(root, a.close))
             os.makedirs(os.path.dirname(outs[0]), exist_ok=True)
-            for out, rows in zip(outs, built):
+            for out, rows, columns in zip(outs, built, (RESULT_COLUMNS, MEMBER_RESULT_COLUMNS)):
                 with open(out, "w", newline="", encoding="utf-8") as f:
-                    f.write(to_csv(rows, RESULT_COLUMNS))
+                    f.write(to_csv(rows, columns))
             revealed[a.close] = a.revealed
             a.write = True
         summary = compute_summary(root, revealed)
