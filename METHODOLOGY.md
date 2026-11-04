@@ -16,7 +16,8 @@ A company is in the portfolio if it meets all four conditions when we choose:
 | Trading | An adjusted close on at least one of the last 5 US trading days before the formation day |
 
 MonkScore ranks each company against a peer group: companies in the same industry and region.
-So the portfolio holds about the top 10% of US companies.
+A score of 90 or more puts a company in about the top 10% of its own peer group.
+So the share of US companies in the portfolio changes from quarter to quarter.
 
 The input is the live score data on [app.monk.st](https://app.monk.st) when we choose.
 There is no ranking, no limit on the number of names and no tie-break. The number of names changes from quarter to quarter.
